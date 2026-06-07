@@ -1,9 +1,31 @@
 {
   "sources": [
-  { "type": "arxiv", "name": "arXiv" },
-  { "type": "openalex", "name": "OpenAlex" },
-  { "type": "crossref", "name": "Crossref" }
-],
+    {
+      "type": "arxiv",
+      "name": "arXiv"
+    },
+    {
+      "type": "openalex",
+      "name": "OpenAlex"
+    },
+    {
+      "type": "crossref",
+      "name": "Crossref"
+    },
+    {
+      "type": "feed",
+      "name": "PubMed EEG/LFP Pain RSS",
+      "url": "PASTE_YOUR_PUBMED_CREATE_RSS_LINK_HERE",
+      "enabled": false
+    },
+    {
+      "type": "feed",
+      "name": "Web of Science Saved Search RSS",
+      "url": "PASTE_YOUR_WOS_RSS_OR_PROXY_ATOM_LINK_HERE",
+      "headers_env": "WOS_FEED_HEADERS",
+      "enabled": false
+    }
+  ],
   "conference_sources": {
     "enabled": false
   },
@@ -25,7 +47,13 @@
         "brain signal pain classification",
         "single trial pain decoding"
       ],
-      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.LG", "cs.AI", "stat.ML"]
+      "arxiv_categories": [
+        "q-bio.NC",
+        "eess.SP",
+        "cs.LG",
+        "cs.AI",
+        "stat.ML"
+      ]
     },
     {
       "id": "eeg_lfp_pain_biomarkers",
@@ -43,7 +71,11 @@
         "functional connectivity pain",
         "source localization pain"
       ],
-      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.LG"]
+      "arxiv_categories": [
+        "q-bio.NC",
+        "eess.SP",
+        "cs.LG"
+      ]
     },
     {
       "id": "neuromodulation_for_pain",
@@ -61,7 +93,12 @@
         "vagus nerve stimulation pain",
         "closed-loop stimulation"
       ],
-      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.RO", "cs.LG"]
+      "arxiv_categories": [
+        "q-bio.NC",
+        "eess.SP",
+        "cs.RO",
+        "cs.LG"
+      ]
     },
     {
       "id": "machine_learning_neural_signal_pain",
@@ -79,7 +116,13 @@
         "personalized pain model",
         "cross subject EEG decoding"
       ],
-      "arxiv_categories": ["cs.LG", "cs.AI", "eess.SP", "q-bio.NC", "stat.ML"]
+      "arxiv_categories": [
+        "cs.LG",
+        "cs.AI",
+        "eess.SP",
+        "q-bio.NC",
+        "stat.ML"
+      ]
     }
   ]
 }
