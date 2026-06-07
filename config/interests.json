@@ -1,8 +1,9 @@
 {
   "sources": [
-    { "type": "arxiv", "name": "arXiv" },
-    { "type": "openalex", "name": "OpenAlex" },
-    { "type": "crossref", "name": "Crossref" }
+  { "type": "arxiv", "name": "arXiv" },
+  { "type": "openalex", "name": "OpenAlex" },
+  { "type": "crossref", "name": "Crossref" }
+]
   ],
   "conference_sources": {
     "enabled": false
