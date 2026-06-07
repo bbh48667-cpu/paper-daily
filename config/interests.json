@@ -1,128 +1,85 @@
 {
   "sources": [
-    { "type": "arxiv", "name": "arXiv" }
+    { "type": "arxiv", "name": "arXiv" },
+    { "type": "openalex", "name": "OpenAlex" },
+    { "type": "crossref", "name": "Crossref" }
   ],
   "conference_sources": {
-    "enabled": true,
-    "current_year": 2026,
-    "lookback_years": 2,
-    "venues": [
-      {
-        "id": "isca",
-        "name": "ISCA",
-        "group": "computer architecture",
-        "dblp_toc_patterns": ["db/conf/isca/isca{year}.bht"]
-      },
-      {
-        "id": "micro",
-        "name": "MICRO",
-        "group": "computer architecture",
-        "dblp_toc_patterns": ["db/conf/micro/micro{year}.bht"]
-      },
-      {
-        "id": "hpca",
-        "name": "HPCA",
-        "group": "computer architecture",
-        "dblp_toc_patterns": ["db/conf/hpca/hpca{year}.bht"]
-      },
-      {
-        "id": "asplos",
-        "name": "ASPLOS",
-        "group": "computer architecture",
-        "dblp_toc_patterns": [
-          "db/conf/asplos/asplos{year}-1.bht",
-          "db/conf/asplos/asplos{year}-2.bht",
-          "db/conf/asplos/asplos{year}-3.bht",
-          "db/conf/asplos/asplos{year}-4.bht"
-        ]
-      },
-      {
-        "id": "mlsys",
-        "name": "MLSys",
-        "group": "systems for machine learning",
-        "dblp_toc_patterns": ["db/conf/mlsys/mlsys{year}.bht"]
-      },
-      {
-        "id": "eurosys",
-        "name": "EuroSys",
-        "group": "systems",
-        "dblp_toc_patterns": ["db/conf/eurosys/eurosys{year}.bht"]
-      }
-    ]
+    "enabled": false
   },
   "topics": [
     {
-      "id": "llm_low_precision_quantization",
-      "name": "大模型低精度量化",
-      "description": "关注大语言模型低比特量化、混合精度、量化感知训练、后训练量化、权重量化、激活量化、KV cache 量化以及量化对推理性能和精度的影响。",
+      "id": "eeg_lfp_pain_decoding",
+      "name": "EEG/LFP 疼痛解码",
+      "description": "关注利用 EEG、LFP、ECoG 或侵入式/非侵入式神经信号进行疼痛状态、疼痛强度、慢性疼痛和伤害性刺激的解码、分类、回归和个体化预测。",
       "keywords": [
-        "large language model quantization",
-        "LLM quantization",
-        "low-bit quantization",
-        "post-training quantization",
-        "weight-only quantization",
-        "activation quantization",
-        "mixed precision",
-        "FP8",
-        "INT4",
-        "INT8",
-        "KV cache quantization"
+        "pain decoding",
+        "pain prediction",
+        "pain intensity decoding",
+        "nociception decoding",
+        "chronic pain biomarker",
+        "EEG pain",
+        "LFP pain",
+        "local field potential pain",
+        "neural decoding pain",
+        "brain signal pain classification",
+        "single trial pain decoding"
       ],
-      "arxiv_categories": ["cs.CL", "cs.LG", "cs.AI", "cs.DC"]
+      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.LG", "cs.AI", "stat.ML"]
     },
     {
-      "id": "tensor_compute_unit_architecture",
-      "name": "张量计算单元结构",
-      "description": "关注 GPU/NPU/TPU 张量计算单元、矩阵乘加阵列、数据流架构、片上存储层次、低精度张量核、AI 加速器微架构和算子映射。",
+      "id": "eeg_lfp_pain_biomarkers",
+      "name": "EEG/LFP 疼痛神经生物标志物",
+      "description": "关注疼痛相关脑电和局部场电位特征，包括频谱功率、时频表征、相位同步、跨频耦合、功能连接、源定位和疼痛相关神经振荡。",
       "keywords": [
-        "tensor processing unit",
-        "tensor core",
-        "matrix multiply unit",
-        "systolic array",
-        "AI accelerator architecture",
-        "NPU architecture",
-        "GPU tensor core",
-        "low precision tensor compute",
-        "dataflow architecture",
-        "on-chip memory hierarchy"
+        "pain biomarker",
+        "EEG biomarker pain",
+        "LFP biomarker pain",
+        "neural oscillation pain",
+        "time frequency pain",
+        "spectral power pain",
+        "high gamma pain",
+        "phase amplitude coupling pain",
+        "functional connectivity pain",
+        "source localization pain"
       ],
-      "arxiv_categories": ["cs.AR", "cs.DC", "cs.LG", "cs.PF"]
+      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.LG"]
     },
     {
-      "id": "llm_inference_cluster_communication",
-      "name": "大模型推理集群通信优化",
-      "description": "关注分布式大模型推理、prefill/decode 分离、张量并行、流水并行、专家并行、跨节点通信、调度、负载均衡和 serving 系统吞吐延迟优化。",
+      "id": "neuromodulation_for_pain",
+      "name": "疼痛神经调控",
+      "description": "关注用于疼痛治疗和机制研究的神经调控方法，包括脊髓刺激、脑深部刺激、运动皮层刺激、经颅磁刺激、经颅电刺激、迷走神经刺激和闭环刺激策略。",
       "keywords": [
-        "LLM inference serving",
-        "distributed inference",
-        "inference cluster",
-        "tensor parallelism",
-        "pipeline parallelism",
-        "expert parallelism",
-        "all-reduce",
-        "collective communication",
-        "prefill decode disaggregation",
-        "serving scheduler"
+        "neuromodulation pain",
+        "closed-loop neuromodulation",
+        "adaptive stimulation pain",
+        "spinal cord stimulation pain",
+        "deep brain stimulation pain",
+        "motor cortex stimulation pain",
+        "transcranial magnetic stimulation pain",
+        "transcranial direct current stimulation pain",
+        "vagus nerve stimulation pain",
+        "closed-loop stimulation"
       ],
-      "arxiv_categories": ["cs.DC", "cs.PF", "cs.CL", "cs.LG"]
+      "arxiv_categories": ["q-bio.NC", "eess.SP", "cs.RO", "cs.LG"]
     },
     {
-      "id": "kvcache_compression_storage_scheduling",
-      "name": "KV cache 压缩与存储调度",
-      "description": "关注大模型推理中的 KV cache 压缩、淘汰、分页、卸载、预取、层级存储、显存管理和长上下文推理效率优化。",
+      "id": "machine_learning_neural_signal_pain",
+      "name": "疼痛神经信号机器学习建模",
+      "description": "关注用于 EEG/LFP 疼痛研究的机器学习、深度学习、时序建模、表征学习、迁移学习、个体化模型和可解释神经解码方法。",
       "keywords": [
-        "KV cache compression",
-        "KV cache eviction",
-        "KV cache scheduling",
-        "paged attention",
-        "attention cache",
-        "long context inference",
-        "memory offloading",
-        "GPU memory management",
-        "cache prefetching",
-        "LLM serving memory"
+        "machine learning pain EEG",
+        "deep learning pain EEG",
+        "neural signal classification",
+        "brain signal decoding",
+        "interpretable neural decoding",
+        "reservoir computing neural decoding",
+        "time series classification EEG",
+        "domain adaptation EEG",
+        "personalized pain model",
+        "cross subject EEG decoding"
       ],
-      "arxiv_categories": ["cs.CL", "cs.LG", "cs.DC", "cs.PF"]
+      "arxiv_categories": ["cs.LG", "cs.AI", "eess.SP", "q-bio.NC", "stat.ML"]
     }
   ]
 }
