@@ -104,6 +104,13 @@ jobs:
           ENABLE_SEMANTIC_SCHOLAR: ${{ vars.ENABLE_SEMANTIC_SCHOLAR || 'false' }}
           SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          WOS_API_KEY: ${{ secrets.WOS_API_KEY }}
+          WOS_DATABASE: ${{ vars.WOS_DATABASE || 'WOS' }}
+          WOS_EDITION: ${{ vars.WOS_EDITION || '' }}
+          WOS_FIELD_TAG: ${{ vars.WOS_FIELD_TAG || 'TS' }}
+          WOS_SORT_FIELD: ${{ vars.WOS_SORT_FIELD || 'LD+D' }}
+          WOS_TIMEOUT_SECONDS: ${{ vars.WOS_TIMEOUT_SECONDS || '60' }}
+          WOS_STARTER_DOCUMENTS_URL: ${{ vars.WOS_STARTER_DOCUMENTS_URL || '' }}
           CUSTOM_FEED_HEADERS: ${{ secrets.CUSTOM_FEED_HEADERS }}
           CUSTOM_FEED_BEARER_TOKEN: ${{ secrets.CUSTOM_FEED_BEARER_TOKEN }}
           CLEAR_PAPER_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.clear_cache || vars.CLEAR_PAPER_CACHE || 'false' }}
