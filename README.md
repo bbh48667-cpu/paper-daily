@@ -130,9 +130,30 @@ Issue JSON 里的默认 `sources` 只需要保留 arXiv：
 
 - `openalex`：OpenAlex Works API，覆盖论文、会议、期刊和机构元数据。
 - `crossref`：Crossref Works API，适合 DOI 和期刊/会议元数据。
+- `wos`：Web of Science Starter API，适合从 WoS Core Collection 获取正式发表论文元数据，需要 `WOS_API_KEY`。
 - `semantic_scholar`：Semantic Scholar Graph API，适合补充摘要、开放 PDF 和引用相关元数据。
 - `google_scholar_serpapi`：通过 SerpApi 的 Google Scholar API 搜索，需要 `SERPAPI_API_KEY`。
 - `feed`：RSS/Atom，自定义期刊、实验室主页或代理服务。
+
+WoS 建议直接用 API，不要依赖网页登录、CSTC 会话、ORCID 绑定或 `Create Alert`。在 Issue JSON 或 `config/interests.json` 里启用：
+
+```json
+{
+  "sources": [
+    { "type": "arxiv", "name": "arXiv" },
+    { "type": "wos", "name": "Web of Science Core Collection" }
+  ],
+  "topics": []
+}
+```
+
+采集器会把每个 topic 的 `keywords` 转成 WoS Advanced Search 查询，例如：
+
+```text
+TS=("EEG pain" OR LFP OR "local field potential")
+```
+
+然后调用 Web of Science Starter API 的 `/documents` 接口，按 `LD+D` 抓取最近录入的记录。
 
 ### 默认会议论文源
 
@@ -355,6 +376,12 @@ Google Scholar 没有稳定官方公开 API，不建议直接爬网页。直接�
 | `OPENALEX_EMAIL` | `you@example.com` | 只给 OpenAlex 使用的邮箱 |
 | `SEMANTIC_SCHOLAR_API_KEY` | `...` | Semantic Scholar API Key；默认不会使用，需同时设置 `ENABLE_SEMANTIC_SCHOLAR=true` |
 | `SERPAPI_API_KEY` | `...` | 启用 `google_scholar_serpapi` 时需要 |
+| `WOS_API_KEY` | `...` | 启用 `wos` 来源时需要的 Clarivate Web of Science Starter API Key，必须配置为 Secret |
+| `WOS_DATABASE` | `WOS` | WoS 数据库代码，默认 `WOS` 表示 Web of Science Core Collection |
+| `WOS_EDITION` | `WOS+SCI` | 可选，限制 WoS Core Collection edition；不设置时按账号权限搜索 |
+| `WOS_FIELD_TAG` | `TS` | WoS 查询字段，默认 Topic Search |
+| `WOS_SORT_FIELD` | `LD+D` | WoS 排序字段，默认按 Load Date 降序 |
+| `WOS_TIMEOUT_SECONDS` | `60` | WoS API 请求超时时间 |
 | `CUSTOM_FEED_HEADERS` | `{"X-API-Key":"..."}` | 自定义 feed/API 代理需要额外 HTTP headers 时使用，建议配置为 Secret |
 | `CUSTOM_FEED_BEARER_TOKEN` | `...` | 自定义 feed/API 代理需要 Bearer Token 时使用，建议配置为 Secret |
 | `MAX_NEW_PAPERS` | `50` | 每次运行最多新增展示的论文数，避免每天论文过多 |
