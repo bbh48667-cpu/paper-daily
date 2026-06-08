@@ -30,6 +30,7 @@ CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 SERPAPI_SEARCH_URL = "https://serpapi.com/search.json"
 WOS_STARTER_DOCUMENTS_URL = "https://api.clarivate.com/apis/wos-starter/v1/documents"
+WOS_EXPANDED_SEARCH_URL = "https://wos-api.clarivate.com/api/wos"
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 DEFAULT_CONFIG = Path("config/interests.json")
 DEFAULT_OUTPUT = Path("web/data/papers.json")
@@ -389,6 +390,20 @@ def wos_query_for_topic(topic: Topic) -> str:
     if not terms:
         terms = [quoted_query_term(topic.name)]
     return f"{field_tag}=(" + " OR ".join(terms) + ")"
+
+
+def wos_api_mode() -> str:
+    mode = os.getenv("WOS_API_MODE", "auto").strip().lower()
+    aliases = {
+        "wos": "expanded",
+        "api": "expanded",
+        "api-expanded": "expanded",
+        "wos-expanded": "expanded",
+        "starter-api": "starter",
+        "wos-starter": "starter",
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in {"auto", "starter", "expanded"} else "auto"
 
 
 def html_to_text(value: str) -> str:
@@ -798,6 +813,14 @@ def wos_publication_date(source: dict[str, Any]) -> str:
     return dt.datetime(year, month, 1, tzinfo=dt.timezone.utc).isoformat()
 
 
+def wos_record_url(uid: str) -> str:
+    return (
+        "https://www.webofscience.com/api/gateway?"
+        f"GWVersion=2&SrcApp=&SrcAuth=WosAPI&KeyUT={urllib.parse.quote(uid)}"
+        "&DestLinkType=FullRecord&DestApp=WOS"
+    )
+
+
 def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science") -> dict[str, Any] | None:
     uid = str(hit.get("uid") or hit.get("UID") or "")
     title = normalize_space(str(hit.get("title") or ""))
@@ -844,7 +867,7 @@ def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science")
         "summary": normalize_space(str(hit.get("abstract") or hit.get("summary") or hit.get("description") or "")),
         "published": wos_publication_date(source),
         "updated": "",
-        "paper_url": str(links.get("record") or (f"https://doi.org/{doi}" if doi else "")),
+        "paper_url": str(links.get("record") or (f"https://doi.org/{doi}" if doi else wos_record_url(uid))),
         "pdf_url": "",
         "categories": list(dict.fromkeys(categories))[:12],
         "wos_uid": uid,
@@ -854,11 +877,173 @@ def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science")
     }
 
 
-def fetch_wos(topic: Topic, max_results: int, source: SourceConfig) -> list[dict[str, Any]]:
-    api_key = os.getenv("WOS_API_KEY") or os.getenv("CLARIVATE_API_KEY")
-    if not api_key:
-        raise RuntimeError("WOS_API_KEY is required for wos source")
+def wos_first_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return item
+    return {}
 
+
+def wos_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [normalize_space(value)] if normalize_space(value) else []
+    if isinstance(value, (int, float)):
+        return [str(value)]
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(wos_text_values(item))
+        return values
+    if isinstance(value, dict):
+        for key in ("content", "value", "display_name", "full_name", "wos_standard"):
+            if value.get(key):
+                return wos_text_values(value.get(key))
+    return []
+
+
+def wos_expanded_title(record: dict[str, Any], title_type: str) -> str:
+    summary = wos_first_dict((record.get("static_data") or {}).get("summary"))
+    titles = wos_first_dict(summary.get("titles")).get("title")
+    for title in ensure_list(titles):
+        if not isinstance(title, dict):
+            continue
+        if str(title.get("type") or "").lower() == title_type:
+            return normalize_space(str(title.get("content") or ""))
+    if title_type == "item":
+        for title in ensure_list(titles):
+            text = " ".join(wos_text_values(title))
+            if text:
+                return normalize_space(text)
+    return ""
+
+
+def wos_expanded_publication_date(pub_info: dict[str, Any]) -> str:
+    if pub_info.get("sortdate"):
+        return date_to_iso(str(pub_info.get("sortdate")))
+    try:
+        year = int(pub_info.get("pubyear") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if year <= 0:
+        return ""
+    month = wos_month_number(pub_info.get("pubmonth") or pub_info.get("early_access_month"))
+    return dt.datetime(year, month, 1, tzinfo=dt.timezone.utc).isoformat()
+
+
+def wos_expanded_identifiers(record: dict[str, Any]) -> dict[str, str]:
+    dynamic_data = wos_first_dict(record.get("dynamic_data"))
+    cluster = wos_first_dict(dynamic_data.get("cluster_related"))
+    identifiers = wos_first_dict(cluster.get("identifiers")).get("identifier")
+    parsed: dict[str, str] = {}
+    for identifier in ensure_list(identifiers):
+        if not isinstance(identifier, dict):
+            continue
+        key = normalize_space(str(identifier.get("type") or "")).lower()
+        value = normalize_space(str(identifier.get("value") or identifier.get("content") or ""))
+        if key and value:
+            parsed[key] = value
+    return parsed
+
+
+def wos_expanded_authors(record: dict[str, Any]) -> list[str]:
+    summary = wos_first_dict((record.get("static_data") or {}).get("summary"))
+    raw_names = wos_first_dict(summary.get("names")).get("name")
+    authors = []
+    for name in ensure_list(raw_names):
+        if not isinstance(name, dict):
+            continue
+        role = str(name.get("role") or "author").lower()
+        if role != "author":
+            continue
+        display = normalize_space(str(name.get("display_name") or name.get("full_name") or name.get("wos_standard") or ""))
+        if display:
+            authors.append(display)
+    return authors
+
+
+def wos_expanded_abstract(record: dict[str, Any]) -> str:
+    full_metadata = wos_first_dict((record.get("static_data") or {}).get("fullrecord_metadata"))
+    abstracts = wos_first_dict(full_metadata.get("abstracts"))
+    abstract = wos_first_dict(abstracts.get("abstract"))
+    abstract_text = wos_first_dict(abstract.get("abstract_text"))
+    return normalize_space(" ".join(wos_text_values(abstract_text.get("p"))))
+
+
+def wos_expanded_categories(record: dict[str, Any], source_title: str) -> list[str]:
+    static_data = wos_first_dict(record.get("static_data"))
+    summary = wos_first_dict(static_data.get("summary"))
+    full_metadata = wos_first_dict(static_data.get("fullrecord_metadata"))
+    category_info = wos_first_dict(full_metadata.get("category_info"))
+    subjects = wos_first_dict(category_info.get("subjects")).get("subject")
+    categories = [
+        *wos_text_values(wos_first_dict(summary.get("doctypes")).get("doctype")),
+        *wos_text_values(wos_first_dict(full_metadata.get("normalized_doctypes")).get("doctype")),
+        source_title,
+        *wos_text_values(wos_first_dict(full_metadata.get("keywords")).get("keyword")),
+        *wos_text_values(subjects),
+    ]
+    categories = [normalize_space(str(category)) for category in categories if category]
+    return list(dict.fromkeys(categories))[:12]
+
+
+def wos_expanded_times_cited(record: dict[str, Any]) -> int | None:
+    dynamic_data = wos_first_dict(record.get("dynamic_data"))
+    citation_related = wos_first_dict(dynamic_data.get("citation_related"))
+    tc_list = wos_first_dict(citation_related.get("tc_list"))
+    for item in ensure_list(tc_list.get("silo_tc")):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("coll_id") or "").upper() != "WOS":
+            continue
+        try:
+            return int(item.get("local_count"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def wos_paper_from_expanded_record(record: dict[str, Any], source_name: str = "Web of Science") -> dict[str, Any] | None:
+    uid = str(record.get("UID") or record.get("uid") or "")
+    title = wos_expanded_title(record, "item")
+    if not uid or not title:
+        return None
+
+    static_data = wos_first_dict(record.get("static_data"))
+    summary = wos_first_dict(static_data.get("summary"))
+    pub_info = wos_first_dict(summary.get("pub_info"))
+    source_title = wos_expanded_title(record, "source")
+    identifiers = wos_expanded_identifiers(record)
+    doi = identifiers.get("doi", "")
+    pmid = identifiers.get("pmid", "") or identifiers.get("pubmed_id", "")
+
+    return {
+        "id": f"wos:{uid}",
+        "source": source_name,
+        "title": title,
+        "authors": wos_expanded_authors(record),
+        "summary": wos_expanded_abstract(record),
+        "published": wos_expanded_publication_date(pub_info),
+        "updated": "",
+        "paper_url": wos_record_url(uid) if uid else (f"https://doi.org/{doi}" if doi else ""),
+        "pdf_url": "",
+        "categories": wos_expanded_categories(record, source_title),
+        "wos_uid": uid,
+        "doi": doi,
+        "pmid": pmid,
+        "times_cited": wos_expanded_times_cited(record),
+    }
+
+
+def wos_request_headers(api_key: str) -> dict[str, str]:
+    return {"User-Agent": "paper-daily-collector/1.0", "X-ApiKey": api_key}
+
+
+def fetch_wos_starter(topic: Topic, max_results: int, source: SourceConfig, api_key: str, endpoint: str = "") -> list[dict[str, Any]]:
     params = {
         "db": os.getenv("WOS_DATABASE", "WOS").strip() or "WOS",
         "q": wos_query_for_topic(topic),
@@ -874,11 +1059,11 @@ def fetch_wos(topic: Topic, max_results: int, source: SourceConfig) -> list[dict
         "tcModifiedTimeSpan": os.getenv("WOS_TC_MODIFIED_TIME_SPAN", "").strip(),
     }
     params.update({key: value for key, value in optional_params.items() if value})
-    endpoint = source.url or os.getenv("WOS_STARTER_DOCUMENTS_URL") or WOS_STARTER_DOCUMENTS_URL
+    endpoint = endpoint or os.getenv("WOS_STARTER_DOCUMENTS_URL") or WOS_STARTER_DOCUMENTS_URL
     url = f"{endpoint}?{urllib.parse.urlencode(params)}"
     data = request_json(
         url,
-        headers={"User-Agent": "paper-daily-collector/1.0", "X-ApiKey": api_key},
+        headers=wos_request_headers(api_key),
         timeout=float(os.getenv("WOS_TIMEOUT_SECONDS", "60")),
     )
 
@@ -892,6 +1077,79 @@ def fetch_wos(topic: Topic, max_results: int, source: SourceConfig) -> list[dict
         paper["seed_topic"] = topic.id
         papers.append(paper)
     return papers
+
+
+def fetch_wos_expanded(topic: Topic, max_results: int, source: SourceConfig, api_key: str, endpoint: str = "") -> list[dict[str, Any]]:
+    params = {
+        "databaseId": os.getenv("WOS_DATABASE", "WOS").strip() or "WOS",
+        "usrQuery": wos_query_for_topic(topic),
+        "count": str(min(max(1, max_results), 100)),
+        "firstRecord": "1",
+        "sortField": os.getenv("WOS_SORT_FIELD", "LD+D").strip() or "LD+D",
+        "optionView": os.getenv("WOS_OPTION_VIEW", "SR").strip() or "SR",
+    }
+    optional_params = {
+        "edition": os.getenv("WOS_EDITION", "").strip(),
+        "publishTimeSpan": os.getenv("WOS_PUBLISH_TIME_SPAN", "").strip(),
+        "loadTimeSpan": os.getenv("WOS_LOAD_TIME_SPAN", "").strip(),
+        "createdTimeSpan": os.getenv("WOS_CREATED_TIME_SPAN", "").strip(),
+        "modifiedTimeSpan": os.getenv("WOS_MODIFIED_TIME_SPAN", "").strip(),
+        "tcModifiedTimeSpan": os.getenv("WOS_TC_MODIFIED_TIME_SPAN", "").strip(),
+        "viewField": os.getenv("WOS_VIEW_FIELD", "").strip(),
+        "links": os.getenv("WOS_LINKS", "").strip(),
+    }
+    params.update({key: value for key, value in optional_params.items() if value})
+    endpoint = endpoint or os.getenv("WOS_EXPANDED_URL") or WOS_EXPANDED_SEARCH_URL
+    url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+    data = request_json(
+        url,
+        headers=wos_request_headers(api_key),
+        timeout=float(os.getenv("WOS_TIMEOUT_SECONDS", "60")),
+    )
+
+    records = (
+        ((data.get("Data") or {}).get("Records") or {})
+        .get("records", {})
+        .get("REC", [])
+        if isinstance(data, dict)
+        else []
+    )
+    papers = []
+    for record in ensure_list(records):
+        if not isinstance(record, dict):
+            continue
+        paper = wos_paper_from_expanded_record(record, source.name)
+        if not paper:
+            continue
+        paper["seed_topic"] = topic.id
+        papers.append(paper)
+    return papers
+
+
+def fetch_wos(topic: Topic, max_results: int, source: SourceConfig) -> list[dict[str, Any]]:
+    api_key = (os.getenv("WOS_API_KEY") or os.getenv("CLARIVATE_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("WOS_API_KEY is required for wos source")
+
+    source_endpoint = source.url.strip()
+    if source_endpoint and "wos-starter" not in source_endpoint and "/api/wos" in source_endpoint:
+        return fetch_wos_expanded(topic, max_results, source, api_key, endpoint=source_endpoint)
+    if source_endpoint:
+        return fetch_wos_starter(topic, max_results, source, api_key, endpoint=source_endpoint)
+
+    mode = wos_api_mode()
+    if mode == "starter":
+        return fetch_wos_starter(topic, max_results, source, api_key)
+    if mode == "expanded":
+        return fetch_wos_expanded(topic, max_results, source, api_key)
+
+    try:
+        return fetch_wos_starter(topic, max_results, source, api_key)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise
+        print("WoS Starter API returned 401; retrying Web of Science API Expanded", flush=True)
+        return fetch_wos_expanded(topic, max_results, source, api_key)
 
 
 def find_conference_abstract_by_title(title: str, max_results: int = 5) -> dict[str, Any] | None:
