@@ -19,11 +19,9 @@
   "enabled": true
     },
     {
-      "type": "feed",
-      "name": "Web of Science Saved Search RSS",
-      "url": "PASTE_YOUR_WOS_RSS_OR_PROXY_ATOM_LINK_HERE",
-      "headers_env": "WOS_FEED_HEADERS",
-      "enabled": false
+      "type": "wos",
+      "name": "Web of Science Core Collection",
+      "enabled": true
     }
   ],
   "conference_sources": {
