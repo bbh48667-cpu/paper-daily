@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime as dt
 import json
 import os
@@ -18,6 +20,7 @@ from scripts.collect_papers import (
     default_conference_years,
     enrich_conference_paper_from_arxiv,
     fetch_arxiv,
+    fetch_wos,
     find_conference_abstract_by_title,
     is_relevant_enough,
     has_meaningful_summary,
@@ -42,6 +45,8 @@ from scripts.collect_papers import (
     Topic,
     trim_papers_for_storage,
     uncached_conference_years,
+    wos_paper_from_hit,
+    wos_query_for_topic,
 )
 
 
@@ -80,6 +85,12 @@ class RetentionTest(unittest.TestCase):
         os.environ.pop("ARXIV_QUERY_MODE", None)
         os.environ.pop("MIN_DAILY_PAPERS", None)
         os.environ.pop("DAILY_BACKFILL_DAYS", None)
+        os.environ.pop("WOS_API_KEY", None)
+        os.environ.pop("CLARIVATE_API_KEY", None)
+        os.environ.pop("WOS_DATABASE", None)
+        os.environ.pop("WOS_FIELD_TAG", None)
+        os.environ.pop("WOS_SORT_FIELD", None)
+        os.environ.pop("WOS_TIMEOUT_SECONDS", None)
 
     def test_arxiv_retry_wait_uses_retry_after_header(self) -> None:
         os.environ["ARXIV_RETRY_MIN_SECONDS"] = "30"
@@ -190,6 +201,24 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(sources[1].name, "Journal Feed")
         self.assertEqual(sources[1].url, "https://example.com/rss.xml")
         self.assertEqual(sources[1].headers_env, "CUSTOM_FEED_HEADERS")
+
+    def test_parse_sources_normalizes_web_of_science_alias(self) -> None:
+        sources = parse_sources({"sources": ["web-of-science"]})
+
+        self.assertEqual([source.type for source in sources], ["wos"])
+
+    def test_wos_query_uses_topic_keywords(self) -> None:
+        topic = Topic(
+            id="pain",
+            name="Pain decoding",
+            description="",
+            keywords=["EEG pain", "LFP", "local field potential"],
+            arxiv_categories=[],
+        )
+
+        query = wos_query_for_topic(topic)
+
+        self.assertEqual(query, 'TS=("EEG pain" OR LFP OR "local field potential")')
 
     def test_semantic_scholar_sources_are_opt_in(self) -> None:
         sources = parse_sources({"sources": ["arxiv", "semantic_scholar"]})
@@ -397,6 +426,54 @@ class RetentionTest(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertEqual(candidate["source"], "OpenAlex")
         self.assertEqual(candidate["summary"], "This paper studies tensor compute")
+
+    def test_wos_candidate_maps_starter_api_hit(self) -> None:
+        candidate = wos_paper_from_hit(
+            {
+                "uid": "WOS:123",
+                "title": "EEG Biomarkers of Chronic Pain",
+                "types": ["Article"],
+                "source": {"sourceTitle": "Pain", "publishYear": 2026, "publishMonth": "JUN"},
+                "names": {"authors": [{"displayName": "Ada Example"}]},
+                "links": {"record": "https://www.webofscience.com/api/gateway?KeyUT=WOS:123"},
+                "identifiers": {"doi": "10.1234/example", "pmid": "123456"},
+                "keywords": {"authorKeywords": ["EEG", "pain biomarker"]},
+                "citations": [{"db": "WOS", "count": 7}],
+            }
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["id"], "wos:WOS:123")
+        self.assertEqual(candidate["source"], "Web of Science")
+        self.assertEqual(candidate["authors"], ["Ada Example"])
+        self.assertEqual(candidate["published"], "2026-06-01T00:00:00+00:00")
+        self.assertEqual(candidate["times_cited"], 7)
+        self.assertIn("pain biomarker", candidate["categories"])
+
+    def test_fetch_wos_uses_api_key_header(self) -> None:
+        os.environ["WOS_API_KEY"] = "secret"
+        topic = Topic(
+            id="pain",
+            name="Pain decoding",
+            description="",
+            keywords=["EEG pain"],
+            arxiv_categories=[],
+        )
+        captured = {}
+
+        def fake_request_json(url: str, headers: dict[str, str] | None = None, timeout: float = 60) -> dict:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return {"hits": [{"uid": "WOS:123", "title": "EEG pain decoding"}]}
+
+        with mock.patch("scripts.collect_papers.request_json", side_effect=fake_request_json):
+            papers = fetch_wos(topic, 5, SourceConfig(type="wos", name="Web of Science"))
+
+        self.assertEqual(papers[0]["id"], "wos:WOS:123")
+        self.assertEqual(captured["headers"]["X-ApiKey"], "secret")
+        self.assertIn("db=WOS", captured["url"])
+        self.assertIn("q=TS%3D%28%22EEG+pain%22%29", captured["url"])
 
     def test_conference_abstract_finder_tries_sources_after_arxiv_failure(self) -> None:
         semantic_candidate = {
