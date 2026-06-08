@@ -105,12 +105,19 @@ jobs:
           SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
           WOS_API_KEY: ${{ secrets.WOS_API_KEY }}
+          WOS_API_MODE: ${{ vars.WOS_API_MODE || 'auto' }}
           WOS_DATABASE: ${{ vars.WOS_DATABASE || 'WOS' }}
           WOS_EDITION: ${{ vars.WOS_EDITION || '' }}
           WOS_FIELD_TAG: ${{ vars.WOS_FIELD_TAG || 'TS' }}
           WOS_SORT_FIELD: ${{ vars.WOS_SORT_FIELD || 'LD+D' }}
           WOS_TIMEOUT_SECONDS: ${{ vars.WOS_TIMEOUT_SECONDS || '60' }}
           WOS_STARTER_DOCUMENTS_URL: ${{ vars.WOS_STARTER_DOCUMENTS_URL || '' }}
+          WOS_EXPANDED_URL: ${{ vars.WOS_EXPANDED_URL || '' }}
+          WOS_OPTION_VIEW: ${{ vars.WOS_OPTION_VIEW || 'SR' }}
+          WOS_LOAD_TIME_SPAN: ${{ vars.WOS_LOAD_TIME_SPAN || '' }}
+          WOS_CREATED_TIME_SPAN: ${{ vars.WOS_CREATED_TIME_SPAN || '' }}
+          WOS_VIEW_FIELD: ${{ vars.WOS_VIEW_FIELD || '' }}
+          WOS_LINKS: ${{ vars.WOS_LINKS || '' }}
           CUSTOM_FEED_HEADERS: ${{ secrets.CUSTOM_FEED_HEADERS }}
           CUSTOM_FEED_BEARER_TOKEN: ${{ secrets.CUSTOM_FEED_BEARER_TOKEN }}
           CLEAR_PAPER_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.clear_cache || vars.CLEAR_PAPER_CACHE || 'false' }}
