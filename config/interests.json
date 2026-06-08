@@ -13,10 +13,10 @@
       "name": "Crossref"
     },
     {
-      "type": "feed",
-      "name": "PubMed EEG/LFP Pain RSS",
-      "url": "PASTE_YOUR_PUBMED_CREATE_RSS_LINK_HERE",
-      "enabled": false
+  "type": "feed",
+  "name": "PubMed EEG/LFP Pain RSS",
+  "url": "https://pubmed.ncbi.nlm.nih.gov/rss/search/1R__6bbhMkeuq2OqKb3o4SHW5YlPKzTfSUbx80Q6fGXLLDAcn4/?limit=50&utm_campaign=pubmed-2&fc=20260608010138",
+  "enabled": true
     },
     {
       "type": "feed",
