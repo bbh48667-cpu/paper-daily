@@ -29,6 +29,7 @@ OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 SERPAPI_SEARCH_URL = "https://serpapi.com/search.json"
+WOS_STARTER_DOCUMENTS_URL = "https://api.clarivate.com/apis/wos-starter/v1/documents"
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 DEFAULT_CONFIG = Path("config/interests.json")
 DEFAULT_OUTPUT = Path("web/data/papers.json")
@@ -148,6 +149,9 @@ def parse_sources(config: dict[str, Any]) -> list[SourceConfig]:
         source_type = str(item.get("type") or "").strip().lower()
         if not source_type:
             continue
+        source_type = source_type.replace("-", "_")
+        if source_type in {"webofscience", "web_of_science"}:
+            source_type = "wos"
         if (
             source_type in {"semantic_scholar", "semanticscholar", "semantic-scholar"}
             and not env_flag("ENABLE_SEMANTIC_SCHOLAR", False)
@@ -367,6 +371,24 @@ def topic_text_query(topic: Topic, limit: int = 6) -> str:
 
 def topic_plain_query(topic: Topic, limit: int = 6) -> str:
     return " ".join(topic.keywords[:limit]) or topic.name
+
+
+def quoted_query_term(value: str) -> str:
+    escaped = normalize_space(value).replace('"', '\\"')
+    if not escaped:
+        return ""
+    if re.search(r"\s", escaped):
+        return f'"{escaped}"'
+    return escaped
+
+
+def wos_query_for_topic(topic: Topic) -> str:
+    field_tag = os.getenv("WOS_FIELD_TAG", "TS").strip().upper() or "TS"
+    terms = [quoted_query_term(keyword) for keyword in topic.keywords[:8]]
+    terms = [term for term in terms if term]
+    if not terms:
+        terms = [quoted_query_term(topic.name)]
+    return f"{field_tag}=(" + " OR ".join(terms) + ")"
 
 
 def html_to_text(value: str) -> str:
@@ -737,6 +759,139 @@ def find_crossref_by_title(title: str, max_results: int = 5) -> dict[str, Any] |
         if candidate and titles_match(title, candidate["title"]) and has_meaningful_summary(candidate):
             return candidate
     return None
+
+
+def wos_month_number(value: Any) -> int:
+    text = str(value or "").strip().upper()
+    if not text:
+        return 1
+    if text.isdigit():
+        return max(1, min(12, int(text)))
+    months = {
+        "JAN": 1,
+        "FEB": 2,
+        "MAR": 3,
+        "APR": 4,
+        "MAY": 5,
+        "JUN": 6,
+        "JUL": 7,
+        "AUG": 8,
+        "SEP": 9,
+        "OCT": 10,
+        "NOV": 11,
+        "DEC": 12,
+    }
+    return months.get(text[:3], 1)
+
+
+def wos_publication_date(source: dict[str, Any]) -> str:
+    for field in ("publicationDate", "publishDate", "date"):
+        if source.get(field):
+            return date_to_iso(source.get(field))
+    try:
+        year = int(source.get("publishYear") or source.get("year") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if year <= 0:
+        return ""
+    month = wos_month_number(source.get("publishMonth"))
+    return dt.datetime(year, month, 1, tzinfo=dt.timezone.utc).isoformat()
+
+
+def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science") -> dict[str, Any] | None:
+    uid = str(hit.get("uid") or hit.get("UID") or "")
+    title = normalize_space(str(hit.get("title") or ""))
+    if not uid or not title:
+        return None
+
+    source = hit.get("source") if isinstance(hit.get("source"), dict) else {}
+    names = hit.get("names") if isinstance(hit.get("names"), dict) else {}
+    links = hit.get("links") if isinstance(hit.get("links"), dict) else {}
+    identifiers = hit.get("identifiers") if isinstance(hit.get("identifiers"), dict) else {}
+    keywords = hit.get("keywords") if isinstance(hit.get("keywords"), dict) else {}
+
+    raw_authors = names.get("authors") or []
+    authors = [
+        normalize_space(str(author.get("displayName") or author.get("wosStandard") or ""))
+        for author in raw_authors
+        if isinstance(author, dict)
+    ]
+
+    categories = [
+        *ensure_list(hit.get("types")),
+        *ensure_list(hit.get("sourceTypes")),
+        source.get("sourceTitle"),
+        *ensure_list(keywords.get("authorKeywords")),
+    ]
+    categories = [normalize_space(str(category)) for category in categories if category]
+
+    doi = str(identifiers.get("doi") or identifiers.get("DOI") or "")
+    citations = hit.get("citations") if isinstance(hit.get("citations"), list) else []
+    citation_count = next(
+        (
+            item.get("count")
+            for item in citations
+            if isinstance(item, dict) and str(item.get("db") or "").upper() == "WOS"
+        ),
+        None,
+    )
+
+    return {
+        "id": f"wos:{uid}",
+        "source": source_name,
+        "title": title,
+        "authors": [author for author in authors if author],
+        "summary": normalize_space(str(hit.get("abstract") or hit.get("summary") or hit.get("description") or "")),
+        "published": wos_publication_date(source),
+        "updated": "",
+        "paper_url": str(links.get("record") or (f"https://doi.org/{doi}" if doi else "")),
+        "pdf_url": "",
+        "categories": list(dict.fromkeys(categories))[:12],
+        "wos_uid": uid,
+        "doi": doi,
+        "pmid": str(identifiers.get("pmid") or ""),
+        "times_cited": citation_count,
+    }
+
+
+def fetch_wos(topic: Topic, max_results: int, source: SourceConfig) -> list[dict[str, Any]]:
+    api_key = os.getenv("WOS_API_KEY") or os.getenv("CLARIVATE_API_KEY")
+    if not api_key:
+        raise RuntimeError("WOS_API_KEY is required for wos source")
+
+    params = {
+        "db": os.getenv("WOS_DATABASE", "WOS").strip() or "WOS",
+        "q": wos_query_for_topic(topic),
+        "limit": str(min(max(1, max_results), 50)),
+        "page": "1",
+        "sortField": os.getenv("WOS_SORT_FIELD", "LD+D").strip() or "LD+D",
+    }
+    optional_params = {
+        "edition": os.getenv("WOS_EDITION", "").strip(),
+        "detail": os.getenv("WOS_DETAIL", "").strip(),
+        "modifiedTimeSpan": os.getenv("WOS_MODIFIED_TIME_SPAN", "").strip(),
+        "publishTimeSpan": os.getenv("WOS_PUBLISH_TIME_SPAN", "").strip(),
+        "tcModifiedTimeSpan": os.getenv("WOS_TC_MODIFIED_TIME_SPAN", "").strip(),
+    }
+    params.update({key: value for key, value in optional_params.items() if value})
+    endpoint = source.url or os.getenv("WOS_STARTER_DOCUMENTS_URL") or WOS_STARTER_DOCUMENTS_URL
+    url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+    data = request_json(
+        url,
+        headers={"User-Agent": "paper-daily-collector/1.0", "X-ApiKey": api_key},
+        timeout=float(os.getenv("WOS_TIMEOUT_SECONDS", "60")),
+    )
+
+    papers = []
+    for hit in data.get("hits") or []:
+        if not isinstance(hit, dict):
+            continue
+        paper = wos_paper_from_hit(hit, source.name)
+        if not paper:
+            continue
+        paper["seed_topic"] = topic.id
+        papers.append(paper)
+    return papers
 
 
 def find_conference_abstract_by_title(title: str, max_results: int = 5) -> dict[str, Any] | None:
@@ -1330,6 +1485,8 @@ def fetch_source_topic(source: SourceConfig, topic: Topic, max_results: int) -> 
         return fetch_semantic_scholar(topic, max_results, source)
     if source.type == "google_scholar_serpapi":
         return fetch_google_scholar_serpapi(topic, max_results, source)
+    if source.type == "wos":
+        return fetch_wos(topic, max_results, source)
     raise ValueError(f"Unsupported topic source type: {source.type}")
 
 
@@ -1391,7 +1548,8 @@ def collection_cutoff(
 
 
 def keyword_score(topic: Topic, paper: dict[str, Any]) -> tuple[float, list[str]]:
-    haystack = f"{paper.get('title', '')} {paper.get('summary', '')}".lower()
+    categories = " ".join(str(category) for category in paper.get("categories", []))
+    haystack = f"{paper.get('title', '')} {paper.get('summary', '')} {categories}".lower()
     hits = []
     weighted = 0.0
     for keyword in topic.keywords:
@@ -1413,7 +1571,10 @@ def category_score(topic: Topic, paper: dict[str, Any]) -> float:
 
 def lexical_overlap_score(topic: Topic, paper: dict[str, Any]) -> float:
     topic_terms = set(re.findall(r"[a-zA-Z0-9]+", f"{topic.description} {' '.join(topic.keywords)}".lower()))
-    paper_terms = set(re.findall(r"[a-zA-Z0-9]+", f"{paper.get('title', '')} {paper.get('summary', '')}".lower()))
+    categories = " ".join(str(category) for category in paper.get("categories", []))
+    paper_terms = set(
+        re.findall(r"[a-zA-Z0-9]+", f"{paper.get('title', '')} {paper.get('summary', '')} {categories}".lower())
+    )
     if not topic_terms or not paper_terms:
         return 0.0
     overlap = topic_terms & paper_terms
