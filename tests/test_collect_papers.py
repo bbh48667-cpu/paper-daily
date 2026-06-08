@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -45,6 +46,7 @@ from scripts.collect_papers import (
     Topic,
     trim_papers_for_storage,
     uncached_conference_years,
+    wos_paper_from_expanded_record,
     wos_paper_from_hit,
     wos_query_for_topic,
 )
@@ -91,6 +93,13 @@ class RetentionTest(unittest.TestCase):
         os.environ.pop("WOS_FIELD_TAG", None)
         os.environ.pop("WOS_SORT_FIELD", None)
         os.environ.pop("WOS_TIMEOUT_SECONDS", None)
+        os.environ.pop("WOS_API_MODE", None)
+        os.environ.pop("WOS_EXPANDED_URL", None)
+        os.environ.pop("WOS_OPTION_VIEW", None)
+        os.environ.pop("WOS_LOAD_TIME_SPAN", None)
+        os.environ.pop("WOS_CREATED_TIME_SPAN", None)
+        os.environ.pop("WOS_VIEW_FIELD", None)
+        os.environ.pop("WOS_LINKS", None)
 
     def test_arxiv_retry_wait_uses_retry_after_header(self) -> None:
         os.environ["ARXIV_RETRY_MIN_SECONDS"] = "30"
@@ -450,6 +459,61 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(candidate["times_cited"], 7)
         self.assertIn("pain biomarker", candidate["categories"])
 
+    def test_wos_candidate_maps_expanded_api_record(self) -> None:
+        candidate = wos_paper_from_expanded_record(
+            {
+                "UID": "WOS:456",
+                "static_data": {
+                    "summary": {
+                        "pub_info": {"pubyear": 2026, "pubmonth": "JUN"},
+                        "titles": {
+                            "title": [
+                                {"type": "source", "content": "Pain"},
+                                {"type": "item", "content": "LFP Biomarkers of Chronic Pain"},
+                            ]
+                        },
+                        "names": {
+                            "name": [
+                                {"role": "author", "display_name": "Ada Example"},
+                                {"role": "editor", "display_name": "Ed Example"},
+                            ]
+                        },
+                        "doctypes": {"doctype": ["Article"]},
+                    },
+                    "fullrecord_metadata": {
+                        "keywords": {"keyword": ["LFP", "pain biomarker"]},
+                        "abstracts": {
+                            "abstract": {
+                                "abstract_text": {
+                                    "p": "This study tests local field potential biomarkers of chronic pain."
+                                }
+                            }
+                        },
+                    },
+                },
+                "dynamic_data": {
+                    "citation_related": {"tc_list": {"silo_tc": [{"coll_id": "WOS", "local_count": 3}]}},
+                    "cluster_related": {
+                        "identifiers": {
+                            "identifier": [
+                                {"type": "doi", "value": "10.1234/expanded"},
+                                {"type": "pmid", "value": "654321"},
+                            ]
+                        }
+                    },
+                },
+            }
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["id"], "wos:WOS:456")
+        self.assertEqual(candidate["authors"], ["Ada Example"])
+        self.assertEqual(candidate["published"], "2026-06-01T00:00:00+00:00")
+        self.assertEqual(candidate["doi"], "10.1234/expanded")
+        self.assertEqual(candidate["pmid"], "654321")
+        self.assertEqual(candidate["times_cited"], 3)
+        self.assertIn("pain biomarker", candidate["categories"])
+
     def test_fetch_wos_uses_api_key_header(self) -> None:
         os.environ["WOS_API_KEY"] = "secret"
         topic = Topic(
@@ -474,6 +538,58 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(captured["headers"]["X-ApiKey"], "secret")
         self.assertIn("db=WOS", captured["url"])
         self.assertIn("q=TS%3D%28%22EEG+pain%22%29", captured["url"])
+
+    def test_fetch_wos_falls_back_to_expanded_api_after_starter_unauthorized(self) -> None:
+        os.environ["WOS_API_KEY"] = "secret"
+        topic = Topic(
+            id="pain",
+            name="Pain decoding",
+            description="",
+            keywords=["EEG pain"],
+            arxiv_categories=[],
+        )
+        calls = []
+        unauthorized = urllib.error.HTTPError(
+            "https://api.clarivate.com/apis/wos-starter/v1/documents",
+            401,
+            "Unauthorized",
+            {},
+            None,
+        )
+        expanded_payload = {
+            "Data": {
+                "Records": {
+                    "records": {
+                        "REC": [
+                            {
+                                "UID": "WOS:456",
+                                "static_data": {
+                                    "summary": {
+                                        "titles": {"title": [{"type": "item", "content": "EEG pain decoding"}]},
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+        def fake_request_json(url: str, headers: dict[str, str] | None = None, timeout: float = 60) -> dict:
+            calls.append({"url": url, "headers": headers, "timeout": timeout})
+            if len(calls) == 1:
+                raise unauthorized
+            return expanded_payload
+
+        with mock.patch("scripts.collect_papers.request_json", side_effect=fake_request_json):
+            papers = fetch_wos(topic, 5, SourceConfig(type="wos", name="Web of Science"))
+
+        self.assertEqual(papers[0]["id"], "wos:WOS:456")
+        self.assertIn("api.clarivate.com/apis/wos-starter", calls[0]["url"])
+        self.assertIn("wos-api.clarivate.com/api/wos", calls[1]["url"])
+        self.assertIn("databaseId=WOS", calls[1]["url"])
+        self.assertIn("usrQuery=TS%3D%28%22EEG+pain%22%29", calls[1]["url"])
+        self.assertEqual(calls[1]["headers"]["X-ApiKey"], "secret")
 
     def test_conference_abstract_finder_tries_sources_after_arxiv_failure(self) -> None:
         semantic_candidate = {
