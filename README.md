@@ -386,6 +386,10 @@ Google Scholar 没有稳定官方公开 API，不建议直接爬网页。直接�
 | `WOS_OPTION_VIEW` | `FS` | Expanded API 返回字段范围；默认用 full record，尽量取回 abstract，避免 WoS 只返回短题录 |
 | `WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT` | `true` | 如果显式设置了 `WOS_OPTION_VIEW=SR` 且短记录缺摘要，自动再请求一次 full record |
 | `WOS_REQUIRE_ABSTRACT` | `true` | WoS 记录缺少有效摘要时不进入 daily 主列表，也不会从旧缓存继续保留 |
+| `WOS_ABSTRACT_SOURCES` | `openalex,crossref,arxiv` | WoS full record 仍缺摘要时，按题名去这些公开索引补摘要，来源会写入 `abstract_source` |
+| `MAX_WOS_ABSTRACT_ENRICHMENTS` | `40` | 每次运行最多为多少条相关 WoS 缺摘要记录补摘要 |
+| `WOS_ABSTRACT_DELAY_SECONDS` | `1` | WoS 补摘要请求之间的等待秒数 |
+| `WOS_ABSTRACT_SEARCH_RESULTS` | `5` | 每个公开索引按题名检索时最多检查的候选数 |
 | `CUSTOM_FEED_HEADERS` | `{"X-API-Key":"..."}` | 自定义 feed/API 代理需要额外 HTTP headers 时使用，建议配置为 Secret |
 | `CUSTOM_FEED_BEARER_TOKEN` | `...` | 自定义 feed/API 代理需要 Bearer Token 时使用，建议配置为 Secret |
 | `MAX_NEW_PAPERS` | `50` | 每次运行最多新增展示的论文数，避免每天论文过多 |
