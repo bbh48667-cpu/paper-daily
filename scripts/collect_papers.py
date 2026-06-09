@@ -821,6 +821,12 @@ def wos_record_url(uid: str) -> str:
     )
 
 
+def wos_collected_at_iso() -> str:
+    # WoS searches are sorted by Load Date; use collection time for daily freshness
+    # while keeping publication date in the separate `published` field.
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
 def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science") -> dict[str, Any] | None:
     uid = str(hit.get("uid") or hit.get("UID") or "")
     title = normalize_space(str(hit.get("title") or ""))
@@ -866,7 +872,7 @@ def wos_paper_from_hit(hit: dict[str, Any], source_name: str = "Web of Science")
         "authors": [author for author in authors if author],
         "summary": normalize_space(str(hit.get("abstract") or hit.get("summary") or hit.get("description") or "")),
         "published": wos_publication_date(source),
-        "updated": "",
+        "updated": wos_collected_at_iso(),
         "paper_url": str(links.get("record") or (f"https://doi.org/{doi}" if doi else wos_record_url(uid))),
         "pdf_url": "",
         "categories": list(dict.fromkeys(categories))[:12],
@@ -1028,7 +1034,7 @@ def wos_paper_from_expanded_record(record: dict[str, Any], source_name: str = "W
         "authors": wos_expanded_authors(record),
         "summary": wos_expanded_abstract(record),
         "published": wos_expanded_publication_date(pub_info),
-        "updated": "",
+        "updated": wos_collected_at_iso(),
         "paper_url": wos_record_url(uid) if uid else (f"https://doi.org/{doi}" if doi else ""),
         "pdf_url": "",
         "categories": wos_expanded_categories(record, source_title),
@@ -2376,7 +2382,16 @@ def collect(
     source_stats: dict[str, dict[str, Any]] = {}
     source_delay_seconds = float(os.getenv("SOURCE_DELAY_SECONDS", "3"))
     for source in sources:
-        source_stats[source.name] = {"type": source.type, "successful_fetches": 0, "failed_fetches": 0}
+        source_stats[source.name] = {
+            "type": source.type,
+            "successful_fetches": 0,
+            "failed_fetches": 0,
+            "candidate_count": 0,
+            "deduped_candidate_count": 0,
+            "outside_cutoff_count": 0,
+            "filtered_low_relevance_count": 0,
+            "selected_candidate_count": 0,
+        }
         if not source.enabled:
             continue
         if is_feed_source(source):
@@ -2386,6 +2401,7 @@ def collect(
                 all_candidates.extend(feed_papers)
                 successful_fetches += 1
                 source_stats[source.name]["successful_fetches"] += 1
+                source_stats[source.name]["candidate_count"] += len(feed_papers)
             except Exception as exc:
                 failed_fetches += 1
                 source_stats[source.name]["failed_fetches"] += 1
@@ -2406,6 +2422,7 @@ def collect(
                 all_candidates.extend(topic_papers)
                 successful_fetches += 1
                 source_stats[source.name]["successful_fetches"] += 1
+                source_stats[source.name]["candidate_count"] += len(topic_papers)
             except Exception as exc:
                 failed_fetches += 1
                 source_stats[source.name]["failed_fetches"] += 1
@@ -2482,8 +2499,11 @@ def collect(
     daily_backfill_cutoff = now - dt.timedelta(days=max(0, backfill_days))
     for paper in dedupe_papers(all_candidates):
         is_conference_paper = paper.get("source_type") == "conference"
+        paper_source_stats = source_stats.get(str(paper.get("source") or ""))
         if not is_conference_paper:
             raw_daily_candidate_count += 1
+            if paper_source_stats is not None:
+                paper_source_stats["deduped_candidate_count"] += 1
         activity_at = paper_activity_datetime(paper)
         in_primary_window = is_conference_paper or activity_at >= cutoff
         in_backfill_window = (
@@ -2494,6 +2514,8 @@ def collect(
         if not in_primary_window and not in_backfill_window:
             if not is_conference_paper:
                 daily_outside_cutoff_count += 1
+                if paper_source_stats is not None:
+                    paper_source_stats["outside_cutoff_count"] += 1
             continue
 
         matches = [score_paper(topic, paper) for topic in topics]
@@ -2501,9 +2523,13 @@ def collect(
         best_match = matches[0]
         if not is_relevant_enough(paper, best_match):
             filtered_low_relevance += 1
+            if not is_conference_paper and paper_source_stats is not None:
+                paper_source_stats["filtered_low_relevance_count"] += 1
             continue
         paper["matches"] = matches
         paper["best_match"] = best_match
+        if not is_conference_paper and paper_source_stats is not None:
+            paper_source_stats["selected_candidate_count"] += 1
         if in_backfill_window:
             paper["backfilled_from_recent_arxiv"] = True
             daily_outside_cutoff_count += 1
