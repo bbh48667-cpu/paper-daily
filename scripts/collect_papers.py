@@ -31,6 +31,7 @@ SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/se
 SERPAPI_SEARCH_URL = "https://serpapi.com/search.json"
 WOS_STARTER_DOCUMENTS_URL = "https://api.clarivate.com/apis/wos-starter/v1/documents"
 WOS_EXPANDED_SEARCH_URL = "https://wos-api.clarivate.com/api/wos"
+WOS_DEFAULT_OPTION_VIEW = "FS"
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 DEFAULT_CONFIG = Path("config/interests.json")
 DEFAULT_OUTPUT = Path("web/data/papers.json")
@@ -404,6 +405,20 @@ def wos_api_mode() -> str:
     }
     mode = aliases.get(mode, mode)
     return mode if mode in {"auto", "starter", "expanded"} else "auto"
+
+
+def wos_expanded_option_view() -> str:
+    view = os.getenv("WOS_OPTION_VIEW", WOS_DEFAULT_OPTION_VIEW).strip().upper()
+    aliases = {
+        "FULL": "FS",
+        "FULL_RECORD": "FS",
+        "FULL-RECORD": "FS",
+        "FR": "FS",
+        "SHORT": "SR",
+        "SHORT_RECORD": "SR",
+        "SHORT-RECORD": "SR",
+    }
+    return aliases.get(view, view) or WOS_DEFAULT_OPTION_VIEW
 
 
 def html_to_text(value: str) -> str:
@@ -1085,14 +1100,21 @@ def fetch_wos_starter(topic: Topic, max_results: int, source: SourceConfig, api_
     return papers
 
 
-def fetch_wos_expanded(topic: Topic, max_results: int, source: SourceConfig, api_key: str, endpoint: str = "") -> list[dict[str, Any]]:
+def fetch_wos_expanded_once(
+    topic: Topic,
+    max_results: int,
+    source: SourceConfig,
+    api_key: str,
+    endpoint: str = "",
+    option_view: str = "",
+) -> list[dict[str, Any]]:
     params = {
         "databaseId": os.getenv("WOS_DATABASE", "WOS").strip() or "WOS",
         "usrQuery": wos_query_for_topic(topic),
         "count": str(min(max(1, max_results), 100)),
         "firstRecord": "1",
         "sortField": os.getenv("WOS_SORT_FIELD", "LD+D").strip() or "LD+D",
-        "optionView": os.getenv("WOS_OPTION_VIEW", "SR").strip() or "SR",
+        "optionView": option_view or wos_expanded_option_view(),
     }
     optional_params = {
         "edition": os.getenv("WOS_EDITION", "").strip(),
@@ -1129,6 +1151,50 @@ def fetch_wos_expanded(topic: Topic, max_results: int, source: SourceConfig, api
             continue
         paper["seed_topic"] = topic.id
         papers.append(paper)
+    return papers
+
+
+def merge_wos_full_records(
+    short_records: list[dict[str, Any]],
+    full_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    full_by_id = {str(paper.get("id") or ""): paper for paper in full_records}
+    merged = []
+    for paper in short_records:
+        full_paper = full_by_id.get(str(paper.get("id") or ""))
+        if full_paper and has_meaningful_summary(full_paper):
+            merged.append(full_paper)
+        else:
+            merged.append(paper)
+    short_ids = {str(paper.get("id") or "") for paper in short_records}
+    for paper in full_records:
+        paper_id = str(paper.get("id") or "")
+        if paper_id and paper_id not in short_ids:
+            merged.append(paper)
+    return merged
+
+
+def fetch_wos_expanded(topic: Topic, max_results: int, source: SourceConfig, api_key: str, endpoint: str = "") -> list[dict[str, Any]]:
+    option_view = wos_expanded_option_view()
+    papers = fetch_wos_expanded_once(topic, max_results, source, api_key, endpoint=endpoint, option_view=option_view)
+    if (
+        option_view == "SR"
+        and env_flag("WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT", True)
+        and any(not has_meaningful_summary(paper) for paper in papers)
+    ):
+        try:
+            full_papers = fetch_wos_expanded_once(
+                topic,
+                max_results,
+                source,
+                api_key,
+                endpoint=endpoint,
+                option_view=WOS_DEFAULT_OPTION_VIEW,
+            )
+            if full_papers:
+                return merge_wos_full_records(papers, full_papers)
+        except Exception as exc:
+            print(f"Warning: WoS full-record retry failed for {topic.name}: {exc}", file=sys.stderr)
     return papers
 
 
@@ -1892,11 +1958,24 @@ def is_placeholder_conference_summary(paper: dict[str, Any]) -> bool:
     return summary.startswith("DBLP 题录")
 
 
+def is_wos_paper(paper: dict[str, Any]) -> bool:
+    source = str(paper.get("source") or "").lower()
+    return bool(paper.get("wos_uid")) or source.startswith("web of science")
+
+
 def has_meaningful_summary(paper: dict[str, Any], min_chars: int = 80) -> bool:
     if is_placeholder_conference_summary(paper):
         return False
     summary = normalize_space(str(paper.get("summary") or ""))
     return len(summary) >= min_chars
+
+
+def should_filter_missing_summary_paper(paper: dict[str, Any]) -> bool:
+    if has_meaningful_summary(paper):
+        return False
+    if is_wos_paper(paper):
+        return env_flag("WOS_REQUIRE_ABSTRACT", True)
+    return False
 
 
 def is_relevant_enough(paper: dict[str, Any], best_match: dict[str, Any]) -> bool:
@@ -2231,12 +2310,16 @@ def merge_with_retained_papers(
     existing_generated_at = str(existing_payload.get("generated_at_iso") or existing_payload.get("generated_at") or now.isoformat())
     retained_by_key: dict[str, dict[str, Any]] = {}
     dropped_low = 0
+    dropped_missing_summary = 0
     retained_recent = 0
     for paper in existing_papers:
         if not isinstance(paper, dict):
             continue
         key = paper_key(paper)
         if not key:
+            continue
+        if should_filter_missing_summary_paper(paper):
+            dropped_missing_summary += 1
             continue
         seen_at = parse_datetime(str(paper.get("first_seen_at") or paper.get("last_seen_at") or existing_generated_at))
         is_recent = bool(
@@ -2289,6 +2372,7 @@ def merge_with_retained_papers(
         "retained_paper_count": retained_count,
         "retained_recent_low_count": retained_recent,
         "dropped_low_relevance_count": dropped_low,
+        "dropped_missing_summary_count": dropped_missing_summary,
     }
 
 
@@ -2389,6 +2473,7 @@ def collect(
             "candidate_count": 0,
             "deduped_candidate_count": 0,
             "outside_cutoff_count": 0,
+            "filtered_missing_summary_count": 0,
             "filtered_low_relevance_count": 0,
             "selected_candidate_count": 0,
         }
@@ -2493,6 +2578,7 @@ def collect(
     recent_papers = []
     daily_backfill_candidates = []
     filtered_low_relevance = 0
+    filtered_missing_summary = 0
     raw_daily_candidate_count = 0
     daily_outside_cutoff_count = 0
     backfill_days = max(days, env_int("DAILY_BACKFILL_DAYS", 14))
@@ -2516,6 +2602,14 @@ def collect(
                 daily_outside_cutoff_count += 1
                 if paper_source_stats is not None:
                     paper_source_stats["outside_cutoff_count"] += 1
+            continue
+
+        if should_filter_missing_summary_paper(paper):
+            filtered_missing_summary += 1
+            if paper_source_stats is not None:
+                paper_source_stats["filtered_missing_summary_count"] = (
+                    paper_source_stats.get("filtered_missing_summary_count", 0) + 1
+                )
             continue
 
         matches = [score_paper(topic, paper) for topic in topics]
@@ -2634,6 +2728,7 @@ def collect(
         "daily_backfill_candidate_count": len(daily_backfill_candidates),
         "daily_backfill_added_count": daily_backfill_added_count,
         "min_daily_papers": min_daily_papers,
+        "filtered_missing_summary_count": filtered_missing_summary,
         "filtered_low_relevance_count": filtered_low_relevance,
         "days": days,
         "collection_mode": collection_mode,
