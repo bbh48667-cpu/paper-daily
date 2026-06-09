@@ -102,6 +102,10 @@ class RetentionTest(unittest.TestCase):
         os.environ.pop("WOS_LINKS", None)
         os.environ.pop("WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT", None)
         os.environ.pop("WOS_REQUIRE_ABSTRACT", None)
+        os.environ.pop("WOS_ABSTRACT_SOURCES", None)
+        os.environ.pop("MAX_WOS_ABSTRACT_ENRICHMENTS", None)
+        os.environ.pop("WOS_ABSTRACT_DELAY_SECONDS", None)
+        os.environ.pop("WOS_ABSTRACT_SEARCH_RESULTS", None)
 
     def test_arxiv_retry_wait_uses_retry_after_header(self) -> None:
         os.environ["ARXIV_RETRY_MIN_SECONDS"] = "30"
@@ -758,6 +762,7 @@ class RetentionTest(unittest.TestCase):
             "wos_uid": "WOS:missing",
         }
         os.environ["MIN_DAILY_PAPERS"] = "0"
+        os.environ["WOS_ABSTRACT_DELAY_SECONDS"] = "0"
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -768,6 +773,7 @@ class RetentionTest(unittest.TestCase):
 
             with (
                 mock.patch("scripts.collect_papers.fetch_source_topic", return_value=[wos_candidate]),
+                mock.patch("scripts.collect_papers.find_wos_abstract_by_title", return_value=None),
                 mock.patch("scripts.collect_papers.time.sleep"),
             ):
                 payload = collect(
@@ -789,10 +795,87 @@ class RetentionTest(unittest.TestCase):
 
         self.assertEqual(payload["papers"], [])
         self.assertEqual(payload["stats"]["filtered_missing_summary_count"], 1)
+        self.assertEqual(payload["stats"]["wos_abstract_enrichment_attempted"], 1)
+        self.assertEqual(payload["stats"]["wos_abstract_enrichment_succeeded"], 0)
         wos_stats = payload["stats"]["source_stats"]["Web of Science Core Collection"]
         self.assertEqual(wos_stats["candidate_count"], 1)
         self.assertEqual(wos_stats["filtered_missing_summary_count"], 1)
         self.assertEqual(wos_stats["selected_candidate_count"], 0)
+
+    def test_collect_enriches_wos_records_from_external_abstract_source(self) -> None:
+        now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+        config = {
+            "topics": [
+                {
+                    "id": "pain",
+                    "name": "Pain neuromodulation",
+                    "description": "",
+                    "keywords": ["closed-loop neuromodulation"],
+                    "arxiv_categories": [],
+                }
+            ],
+            "sources": [{"type": "wos", "name": "Web of Science Core Collection"}],
+        }
+        wos_candidate = {
+            "id": "wos:WOS:enrich",
+            "source": "Web of Science Core Collection",
+            "title": "Closed-loop neuromodulation for pain",
+            "summary": "",
+            "published": now_iso,
+            "updated": now_iso,
+            "paper_url": "https://www.webofscience.com/api/gateway?KeyUT=WOS:enrich",
+            "categories": ["Closed-loop neuromodulation"],
+            "wos_uid": "WOS:enrich",
+        }
+        external_candidate = {
+            "id": "https://openalex.org/W123",
+            "source": "OpenAlex",
+            "title": "Closed-loop neuromodulation for pain",
+            "summary": "This paper reports a closed-loop neuromodulation approach for pain with enough abstract detail to support a reliable daily-paper summary. " * 2,
+            "paper_url": "https://openalex.org/W123",
+            "pdf_url": "",
+            "authors": ["Ada Example"],
+            "categories": ["Neuroscience"],
+        }
+        os.environ["MIN_DAILY_PAPERS"] = "0"
+        os.environ["WOS_ABSTRACT_DELAY_SECONDS"] = "0"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "interests.json"
+            output_path = tmp_path / "papers.json"
+            conference_output_path = tmp_path / "conference.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            with (
+                mock.patch("scripts.collect_papers.fetch_source_topic", return_value=[wos_candidate]),
+                mock.patch("scripts.collect_papers.find_wos_abstract_by_title", return_value=external_candidate),
+                mock.patch("scripts.collect_papers.time.sleep"),
+            ):
+                payload = collect(
+                    config_path,
+                    output_path,
+                    conference_output_path,
+                    days=7,
+                    max_per_topic=1,
+                    max_summaries=0,
+                    max_new_papers=10,
+                    max_stored_papers=10,
+                    max_new_conference_papers=10,
+                    max_stored_conference_papers=10,
+                    max_data_bytes=0,
+                    incremental_since_last_run=False,
+                    recent_history_days=45,
+                    clear_cache=True,
+                )
+
+        self.assertEqual(len(payload["papers"]), 1)
+        self.assertEqual(payload["stats"]["filtered_missing_summary_count"], 0)
+        self.assertEqual(payload["stats"]["wos_abstract_enrichment_attempted"], 1)
+        self.assertEqual(payload["stats"]["wos_abstract_enrichment_succeeded"], 1)
+        self.assertEqual(payload["papers"][0]["source"], "Web of Science Core Collection")
+        self.assertEqual(payload["papers"][0]["abstract_source"], "OpenAlex")
+        self.assertTrue(has_meaningful_summary(payload["papers"][0]))
 
     def test_llm_summary_skips_conference_and_title_only_by_default(self) -> None:
         self.assertFalse(should_summarize_paper_with_llm({"source_type": "conference", "summary": "DBLP 题录。"}))
