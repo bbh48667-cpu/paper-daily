@@ -456,6 +456,7 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(candidate["source"], "Web of Science")
         self.assertEqual(candidate["authors"], ["Ada Example"])
         self.assertEqual(candidate["published"], "2026-06-01T00:00:00+00:00")
+        self.assertTrue(candidate["updated"])
         self.assertEqual(candidate["times_cited"], 7)
         self.assertIn("pain biomarker", candidate["categories"])
 
@@ -509,6 +510,7 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(candidate["id"], "wos:WOS:456")
         self.assertEqual(candidate["authors"], ["Ada Example"])
         self.assertEqual(candidate["published"], "2026-06-01T00:00:00+00:00")
+        self.assertTrue(candidate["updated"])
         self.assertEqual(candidate["doi"], "10.1234/expanded")
         self.assertEqual(candidate["pmid"], "654321")
         self.assertEqual(candidate["times_cited"], 3)
