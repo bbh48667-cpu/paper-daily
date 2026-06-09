@@ -1246,6 +1246,39 @@ def find_conference_abstract_by_title(title: str, max_results: int = 5) -> dict[
     return None
 
 
+def wos_abstract_sources() -> list[str]:
+    sources = env_list("WOS_ABSTRACT_SOURCES", ["openalex", "crossref", "arxiv"])
+    if env_flag("ENABLE_SEMANTIC_SCHOLAR", False):
+        return sources
+    return [
+        source
+        for source in sources
+        if source.strip().lower() not in {"semantic_scholar", "semanticscholar", "semantic-scholar"}
+    ]
+
+
+def find_wos_abstract_by_title(title: str, max_results: int = 5) -> dict[str, Any] | None:
+    finders = {
+        "arxiv": find_arxiv_by_title,
+        "semantic_scholar": find_semantic_scholar_by_title,
+        "semanticscholar": find_semantic_scholar_by_title,
+        "openalex": find_openalex_by_title,
+        "crossref": find_crossref_by_title,
+    }
+    for source_type in wos_abstract_sources():
+        finder = finders.get(source_type.strip().lower())
+        if not finder:
+            continue
+        try:
+            candidate = finder(title, max_results=max_results)
+        except Exception as exc:
+            print(f"Warning: {source_type} WoS abstract enrichment failed for {title[:80]}: {exc}", file=sys.stderr)
+            continue
+        if candidate and has_meaningful_summary(candidate):
+            return candidate
+    return None
+
+
 def conference_abstract_sources() -> list[str]:
     sources = env_list("CONFERENCE_ABSTRACT_SOURCES", ["arxiv", "openalex", "crossref"])
     if env_flag("ENABLE_SEMANTIC_SCHOLAR", False):
@@ -1287,6 +1320,67 @@ def enrich_conference_paper_from_candidate(
     categories = list(dict.fromkeys([*paper.get("categories", []), *candidate.get("categories", [])]))
     paper["categories"] = [category for category in categories if category]
     return True
+
+
+def enrich_wos_paper_from_candidate(paper: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if not has_meaningful_summary(candidate):
+        return False
+    source = str(candidate.get("source") or "external")
+    paper["summary"] = candidate["summary"]
+    paper["abstract_source"] = source
+    paper["abstract_source_id"] = candidate.get("id", "")
+    paper["abstract_source_url"] = candidate.get("paper_url", "")
+    paper["enriched"] = True
+    paper["enriched_from_external_abstract"] = True
+    if not paper.get("doi") and candidate.get("doi"):
+        paper["doi"] = candidate.get("doi")
+    if not paper.get("pmid") and candidate.get("pmid"):
+        paper["pmid"] = candidate.get("pmid")
+    if not paper.get("authors") and candidate.get("authors"):
+        paper["authors"] = candidate["authors"]
+    categories = list(dict.fromkeys([*paper.get("categories", []), *candidate.get("categories", [])]))
+    paper["categories"] = [category for category in categories if category]
+    return True
+
+
+def wos_abstract_enrichment_stats() -> dict[str, Any]:
+    return {
+        "wos_abstract_enrichment_attempted": 0,
+        "wos_abstract_enrichment_succeeded": 0,
+        "wos_abstract_enrichment_skipped": 0,
+        "wos_abstract_enrichment_sources": wos_abstract_sources(),
+        "wos_abstract_enrichment_last_error": "",
+    }
+
+
+def maybe_enrich_wos_paper_abstract(paper: dict[str, Any], stats: dict[str, Any]) -> bool:
+    if not is_wos_paper(paper) or has_meaningful_summary(paper):
+        return False
+    max_enrichments = max(0, env_int("MAX_WOS_ABSTRACT_ENRICHMENTS", 40))
+    if stats["wos_abstract_enrichment_attempted"] >= max_enrichments:
+        stats["wos_abstract_enrichment_skipped"] += 1
+        return False
+
+    stats["wos_abstract_enrichment_attempted"] += 1
+    try:
+        candidate = find_wos_abstract_by_title(
+            str(paper.get("title") or ""),
+            max_results=max(1, env_int("WOS_ABSTRACT_SEARCH_RESULTS", 5)),
+        )
+    except Exception as exc:
+        stats["wos_abstract_enrichment_last_error"] = str(exc)
+        print(f"Warning: WoS abstract enrichment failed for {str(paper.get('title') or '')[:80]}: {exc}", file=sys.stderr)
+        candidate = None
+
+    enriched = bool(candidate and enrich_wos_paper_from_candidate(paper, candidate))
+    if enriched:
+        stats["wos_abstract_enrichment_succeeded"] += 1
+        print(f"Enriched WoS paper from {paper.get('abstract_source')}: {paper.get('title')}", flush=True)
+
+    delay_seconds = env_float("WOS_ABSTRACT_DELAY_SECONDS", 1.0)
+    if stats["wos_abstract_enrichment_attempted"] < max_enrichments and delay_seconds > 0:
+        time.sleep(delay_seconds)
+    return enriched
 
 
 def dblp_retry_wait_seconds(exc: Exception, attempt: int) -> float:
@@ -2463,6 +2557,7 @@ def collect(
         "conference_arxiv_enrichment_skipped": 0,
         "conference_arxiv_enrichment_last_error": "",
     }
+    wos_enrichment_stats = wos_abstract_enrichment_stats()
     source_stats: dict[str, dict[str, Any]] = {}
     source_delay_seconds = float(os.getenv("SOURCE_DELAY_SECONDS", "3"))
     for source in sources:
@@ -2604,14 +2699,6 @@ def collect(
                     paper_source_stats["outside_cutoff_count"] += 1
             continue
 
-        if should_filter_missing_summary_paper(paper):
-            filtered_missing_summary += 1
-            if paper_source_stats is not None:
-                paper_source_stats["filtered_missing_summary_count"] = (
-                    paper_source_stats.get("filtered_missing_summary_count", 0) + 1
-                )
-            continue
-
         matches = [score_paper(topic, paper) for topic in topics]
         matches.sort(key=lambda item: item["score"], reverse=True)
         best_match = matches[0]
@@ -2620,6 +2707,18 @@ def collect(
             if not is_conference_paper and paper_source_stats is not None:
                 paper_source_stats["filtered_low_relevance_count"] += 1
             continue
+        if should_filter_missing_summary_paper(paper):
+            maybe_enrich_wos_paper_abstract(paper, wos_enrichment_stats)
+            if should_filter_missing_summary_paper(paper):
+                filtered_missing_summary += 1
+                if paper_source_stats is not None:
+                    paper_source_stats["filtered_missing_summary_count"] = (
+                        paper_source_stats.get("filtered_missing_summary_count", 0) + 1
+                    )
+                continue
+            matches = [score_paper(topic, paper) for topic in topics]
+            matches.sort(key=lambda item: item["score"], reverse=True)
+            best_match = matches[0]
         paper["matches"] = matches
         paper["best_match"] = best_match
         if not is_conference_paper and paper_source_stats is not None:
@@ -2750,6 +2849,7 @@ def collect(
         "conference_source_count": len(conference_sources),
         "cached_conference_candidate_count": cached_conference_candidate_count,
         "clear_cache": clear_cache,
+        **wos_enrichment_stats,
         **conference_enrichment_stats,
     }
 
