@@ -100,6 +100,8 @@ class RetentionTest(unittest.TestCase):
         os.environ.pop("WOS_CREATED_TIME_SPAN", None)
         os.environ.pop("WOS_VIEW_FIELD", None)
         os.environ.pop("WOS_LINKS", None)
+        os.environ.pop("WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT", None)
+        os.environ.pop("WOS_REQUIRE_ABSTRACT", None)
 
     def test_arxiv_retry_wait_uses_retry_after_header(self) -> None:
         os.environ["ARXIV_RETRY_MIN_SECONDS"] = "30"
@@ -591,7 +593,78 @@ class RetentionTest(unittest.TestCase):
         self.assertIn("wos-api.clarivate.com/api/wos", calls[1]["url"])
         self.assertIn("databaseId=WOS", calls[1]["url"])
         self.assertIn("usrQuery=TS%3D%28%22EEG+pain%22%29", calls[1]["url"])
+        self.assertIn("optionView=FS", calls[1]["url"])
         self.assertEqual(calls[1]["headers"]["X-ApiKey"], "secret")
+
+    def test_fetch_wos_expanded_retries_full_record_when_short_record_lacks_abstract(self) -> None:
+        os.environ["WOS_API_KEY"] = "secret"
+        os.environ["WOS_API_MODE"] = "expanded"
+        os.environ["WOS_OPTION_VIEW"] = "SR"
+        topic = Topic(
+            id="pain",
+            name="Pain decoding",
+            description="",
+            keywords=["EEG pain"],
+            arxiv_categories=[],
+        )
+        calls = []
+        short_payload = {
+            "Data": {
+                "Records": {
+                    "records": {
+                        "REC": [
+                            {
+                                "UID": "WOS:456",
+                                "static_data": {
+                                    "summary": {
+                                        "titles": {"title": [{"type": "item", "content": "EEG pain decoding"}]},
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        full_payload = {
+            "Data": {
+                "Records": {
+                    "records": {
+                        "REC": [
+                            {
+                                "UID": "WOS:456",
+                                "static_data": {
+                                    "summary": {
+                                        "titles": {"title": [{"type": "item", "content": "EEG pain decoding"}]},
+                                    },
+                                    "fullrecord_metadata": {
+                                        "abstracts": {
+                                            "abstract": {
+                                                "abstract_text": {
+                                                    "p": "This paper presents an EEG pain decoding method with enough methodological detail to support reliable automatic summarization."
+                                                }
+                                            }
+                                        }
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+        def fake_request_json(url: str, headers: dict[str, str] | None = None, timeout: float = 60) -> dict:
+            calls.append(url)
+            return short_payload if len(calls) == 1 else full_payload
+
+        with mock.patch("scripts.collect_papers.request_json", side_effect=fake_request_json):
+            papers = fetch_wos(topic, 5, SourceConfig(type="wos", name="Web of Science"))
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("optionView=SR", calls[0])
+        self.assertIn("optionView=FS", calls[1])
+        self.assertTrue(has_meaningful_summary(papers[0]))
 
     def test_conference_abstract_finder_tries_sources_after_arxiv_failure(self) -> None:
         semantic_candidate = {
@@ -659,6 +732,68 @@ class RetentionTest(unittest.TestCase):
         self.assertFalse(is_relevant_enough(weak_conference, {"score": 0.05, "keyword_hits": []}))
         self.assertTrue(is_relevant_enough(keyword_match, {"score": 0.04, "keyword_hits": ["KV cache compression"]}))
 
+    def test_collect_filters_wos_records_without_meaningful_abstract(self) -> None:
+        now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+        config = {
+            "topics": [
+                {
+                    "id": "pain",
+                    "name": "Pain neuromodulation",
+                    "description": "",
+                    "keywords": ["closed-loop neuromodulation"],
+                    "arxiv_categories": [],
+                }
+            ],
+            "sources": [{"type": "wos", "name": "Web of Science Core Collection"}],
+        }
+        wos_candidate = {
+            "id": "wos:WOS:missing",
+            "source": "Web of Science Core Collection",
+            "title": "Closed-loop neuromodulation for pain",
+            "summary": "",
+            "published": now_iso,
+            "updated": now_iso,
+            "paper_url": "https://www.webofscience.com/api/gateway?KeyUT=WOS:missing",
+            "categories": ["Closed-loop neuromodulation"],
+            "wos_uid": "WOS:missing",
+        }
+        os.environ["MIN_DAILY_PAPERS"] = "0"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "interests.json"
+            output_path = tmp_path / "papers.json"
+            conference_output_path = tmp_path / "conference.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            with (
+                mock.patch("scripts.collect_papers.fetch_source_topic", return_value=[wos_candidate]),
+                mock.patch("scripts.collect_papers.time.sleep"),
+            ):
+                payload = collect(
+                    config_path,
+                    output_path,
+                    conference_output_path,
+                    days=7,
+                    max_per_topic=1,
+                    max_summaries=0,
+                    max_new_papers=10,
+                    max_stored_papers=10,
+                    max_new_conference_papers=10,
+                    max_stored_conference_papers=10,
+                    max_data_bytes=0,
+                    incremental_since_last_run=False,
+                    recent_history_days=45,
+                    clear_cache=True,
+                )
+
+        self.assertEqual(payload["papers"], [])
+        self.assertEqual(payload["stats"]["filtered_missing_summary_count"], 1)
+        wos_stats = payload["stats"]["source_stats"]["Web of Science Core Collection"]
+        self.assertEqual(wos_stats["candidate_count"], 1)
+        self.assertEqual(wos_stats["filtered_missing_summary_count"], 1)
+        self.assertEqual(wos_stats["selected_candidate_count"], 0)
+
     def test_llm_summary_skips_conference_and_title_only_by_default(self) -> None:
         self.assertFalse(should_summarize_paper_with_llm({"source_type": "conference", "summary": "DBLP 题录。"}))
         self.assertFalse(should_summarize_paper_with_llm({"source": "Crossref", "summary": ""}))
@@ -696,6 +831,39 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(stats["retained_recent_low_count"], 1)
         self.assertEqual(stats["dropped_low_relevance_count"], 1)
         self.assertTrue(next(item for item in merged if item["id"] == "old-high")["retained_from_previous_run"])
+
+    def test_merge_drops_retained_wos_records_without_abstract(self) -> None:
+        now = dt.datetime(2026, 5, 28, tzinfo=dt.timezone.utc)
+        stale_wos = paper("wos:WOS:missing", "high", "2026-05-27T00:00:00+00:00")
+        stale_wos.update(
+            {
+                "source": "Web of Science Core Collection",
+                "wos_uid": "WOS:missing",
+                "summary": "",
+            }
+        )
+        retained_openalex = paper("openalex:good", "high", "2026-05-27T00:00:00+00:00")
+        retained_openalex.update(
+            {
+                "source": "OpenAlex",
+                "summary": "This paper provides enough abstract detail for a reliable daily-paper summary. " * 2,
+            }
+        )
+        existing = {
+            "generated_at_iso": "2026-05-27T00:00:00+00:00",
+            "papers": [stale_wos, retained_openalex],
+        }
+
+        merged, stats = merge_with_retained_papers(
+            [],
+            existing,
+            now,
+            recent_history_days=45,
+        )
+
+        self.assertEqual([item["id"] for item in merged], ["openalex:good"])
+        self.assertEqual(stats["retained_paper_count"], 1)
+        self.assertEqual(stats["dropped_missing_summary_count"], 1)
 
     def test_merge_retains_only_active_conference_years(self) -> None:
         now = dt.datetime(2026, 5, 28, tzinfo=dt.timezone.utc)
