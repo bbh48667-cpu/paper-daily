@@ -116,6 +116,10 @@ jobs:
           WOS_OPTION_VIEW: ${{ vars.WOS_OPTION_VIEW || 'FS' }}
           WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT: ${{ vars.WOS_RETRY_FULL_RECORD_ON_MISSING_ABSTRACT || 'true' }}
           WOS_REQUIRE_ABSTRACT: ${{ vars.WOS_REQUIRE_ABSTRACT || 'true' }}
+          WOS_ABSTRACT_SOURCES: ${{ vars.WOS_ABSTRACT_SOURCES || 'openalex,crossref,arxiv' }}
+          MAX_WOS_ABSTRACT_ENRICHMENTS: ${{ vars.MAX_WOS_ABSTRACT_ENRICHMENTS || '40' }}
+          WOS_ABSTRACT_DELAY_SECONDS: ${{ vars.WOS_ABSTRACT_DELAY_SECONDS || '1' }}
+          WOS_ABSTRACT_SEARCH_RESULTS: ${{ vars.WOS_ABSTRACT_SEARCH_RESULTS || '5' }}
           WOS_LOAD_TIME_SPAN: ${{ vars.WOS_LOAD_TIME_SPAN || '' }}
           WOS_CREATED_TIME_SPAN: ${{ vars.WOS_CREATED_TIME_SPAN || '' }}
           WOS_VIEW_FIELD: ${{ vars.WOS_VIEW_FIELD || '' }}
